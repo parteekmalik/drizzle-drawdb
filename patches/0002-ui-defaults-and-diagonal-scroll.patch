@@ -1,0 +1,59 @@
+diff --git a/index.html b/index.html
+index baaa0eb..dcba6a5 100644
+--- a/index.html
++++ b/index.html
+@@ -52,7 +52,7 @@
+ 
+     <title>drawDB | Online database diagram editor and SQL generator</title>
+   </head>
+-  <body theme-mode="light">
++  <body theme-mode="dark">
+     <noscript>You need to enable JavaScript to run this app.</noscript>
+     <div id="root"></div>
+     <script src="/config.js"></script>
+diff --git a/src/components/EditorCanvas/Canvas.jsx b/src/components/EditorCanvas/Canvas.jsx
+index b1fad48..277d5bd 100644
+--- a/src/components/EditorCanvas/Canvas.jsx
++++ b/src/components/EditorCanvas/Canvas.jsx
+@@ -734,20 +734,18 @@ export default function Canvas() {
+           },
+           zoom: e.deltaY <= 0 ? prev.zoom * 1.05 : prev.zoom / 1.05,
+         }));
+-      } else if (e.shiftKey) {
+-        setTransform((prev) => ({
+-          ...prev,
+-          pan: {
+-            ...prev.pan,
+-            x: prev.pan.x + e.deltaY / prev.zoom,
+-          },
+-        }));
+       } else {
++        // Trackpads report both axes in deltaX/deltaY, so honouring them
++        // together enables diagonal panning. Browsers fold a horizontal swipe
++        // into deltaY when Shift is held and report deltaX as 0, so fall back
++        // to that when there is no horizontal delta (i.e. a mouse wheel).
++        const hasHorizontalDelta = Math.abs(e.deltaX) > 0;
++
+         setTransform((prev) => ({
+           ...prev,
+           pan: {
+-            ...prev.pan,
+-            y: prev.pan.y + e.deltaY / prev.zoom,
++            x: prev.pan.x + (e.shiftKey && !hasHorizontalDelta ? e.deltaY : e.deltaX) / prev.zoom,
++            y: prev.pan.y + (e.shiftKey && !hasHorizontalDelta ? 0 : e.deltaY) / prev.zoom,
+           },
+         }));
+       }
+diff --git a/src/context/SettingsContext.jsx b/src/context/SettingsContext.jsx
+index cbb0632..ded008e 100644
+--- a/src/context/SettingsContext.jsx
++++ b/src/context/SettingsContext.jsx
+@@ -8,7 +8,7 @@ const defaultSettings = {
+   showGrid: true,
+   snapToGrid: false,
+   showDataTypes: true,
+-  mode: "light",
++  mode: "dark",
+   autosave: true,
+   showCardinality: true,
+   showRelationshipLabels: true,

@@ -1,0 +1,166 @@
+diff --git a/src/extensions/localDiagram.js b/src/extensions/localDiagram.js
+new file mode 100644
+index 0000000..96b65e8
+--- /dev/null
++++ b/src/extensions/localDiagram.js
+@@ -0,0 +1,134 @@
++import { db } from "../data/db";
++
++/**
++ * Local diagram loading extension.
++ *
++ * DrawDB already exposes an extension seam: `Workspace.fetchDiagram()` looks up
++ * a diagram in local IndexedDB first, then falls back to the `cloudLoad`
++ * extension hook when one is registered. Registering `cloudLoad` is enough to
++ * teach the editor to load a diagram that is served next to the app, without
++ * touching the import pipeline, the canvas, or any editor state handling.
++ *
++ * Configuration is read from the existing runtime config seam
++ * (`window.__DRAWDB_CONFIG__`, populated by `/config.js`). When
++ * `localDiagramBase` is absent this returns `{}` and DrawDB behaves exactly as
++ * it does upstream.
++ *
++ * The returned payload uses DrawDB's *internal* diagram record shape (note
++ * `references` / `areas` / `name`), which is what `Workspace` expects when it
++ * hydrates editor state -- this differs from DrawDB's JSON *export* shape.
++ *
++ * Live updates: the drizzle-drawdb CLI watches the schema files and pushes a
++ * new revision over SSE whenever it re-exports the diagram. On such an event
++ * we re-fetch the diagram, persist it (upsert -- Workspace reads IndexedDB
++ * before cloudLoad, so a reload must find the fresh record there), and reload
++ * the page. The schema is the source of truth: pan/zoom and unsaved manual
++ * edits are dropped when the schema changes.
++ */
++export function createLocalDiagramExtensions(runtimeConfig = {}) {
++  const base = typeof runtimeConfig.localDiagramBase === "string"
++    ? runtimeConfig.localDiagramBase.replace(/\/+$/, "")
++    : null;
++
++  if (!base) return {};
++
++  let currentDiagramId = null;
++  let liveSource = null;
++
++  const ensureLiveReload = () => {
++    if (liveSource) return;
++
++    liveSource = new EventSource(`${base}/events`);
++
++    liveSource.addEventListener("diagram", async (event) => {
++      let diagramId = currentDiagramId;
++
++      try {
++        const payload = JSON.parse(event.data);
++        if (payload && typeof payload.diagramId === "string") {
++          diagramId = payload.diagramId;
++        }
++      } catch {
++        // Malformed event: fall back to the last loaded diagram id.
++      }
++
++      if (!diagramId) return;
++
++      let diagram;
++
++      try {
++        const response = await fetch(
++          `${base}/diagrams/${encodeURIComponent(diagramId)}`,
++        );
++
++        if (!response.ok) return;
++
++        diagram = await response.json();
++      } catch (error) {
++        console.warn("drizzle-drawdb: live reload failed", error);
++        return;
++      }
++
++      if (!diagram || !Array.isArray(diagram.tables)) return;
++
++      try {
++        // Update in place: `diagramId` is an index, not the primary key, so
++        // `put` would add a duplicate and the reload would read the stale
++        // first record. Workspace checks IndexedDB before cloudLoad, so the
++        // fresh diagram must replace the cached one.
++        await db.diagrams
++          .where("diagramId")
++          .equals(diagramId)
++          .modify((existing) => {
++            Object.assign(existing, diagram);
++          });
++      } catch (error) {
++        console.warn("drizzle-drawdb: could not cache diagram locally", error);
++      }
++
++      window.location.reload();
++    });
++  };
++
++  return {
++    async cloudLoad(diagramId) {
++      currentDiagramId = diagramId;
++      ensureLiveReload();
++
++      let diagram;
++
++      try {
++        const response = await fetch(
++          `${base}/diagrams/${encodeURIComponent(diagramId)}`,
++        );
++
++        if (!response.ok) return null;
++
++        diagram = await response.json();
++      } catch {
++        return null;
++      }
++
++      if (!diagram || !Array.isArray(diagram.tables)) return null;
++
++      // Seed local persistence so the diagram behaves like any other DrawDB
++      // diagram: editable, autosaving, and listed under "Open diagram".
++      try {
++        const existing = await db.diagrams
++          .where("diagramId")
++          .equals(diagramId)
++          .first();
++
++        if (!existing) {
++          const { canWrite, ...record } = diagram;
++          await db.diagrams.add(record);
++        }
++      } catch (error) {
++        console.warn("drizzle-drawdb: could not cache diagram locally", error);
++      }
++
++      // Guarantees the editor treats the diagram as writable.
++      return { ...diagram, canWrite: true };
++    },
++  };
++}
+diff --git a/src/main.jsx b/src/main.jsx
+index 1e8888d..5326221 100644
+--- a/src/main.jsx
++++ b/src/main.jsx
+@@ -5,11 +5,20 @@ import App from "./App.jsx";
+ import en_US from "@douyinfe/semi-ui/lib/es/locale/source/en_US";
+ import "./index.css";
+ import "./i18n/i18n.js";
++import ExtensionsContext from "./context/ExtensionsContext";
++import { createLocalDiagramExtensions } from "./extensions/localDiagram";
++
++// No-op (returns `{}`) unless `/config.js` sets `localDiagramBase`.
++const localExtensions = createLocalDiagramExtensions(
++  (typeof window !== "undefined" && window.__DRAWDB_CONFIG__) || {},
++);
+ 
+ const root = ReactDOM.createRoot(document.getElementById("root"));
+ root.render(
+   <LocaleProvider locale={en_US}>
+-    <App />
++    <ExtensionsContext.Provider value={localExtensions}>
++      <App />
++    </ExtensionsContext.Provider>
+     <Analytics />
+   </LocaleProvider>,
+ );

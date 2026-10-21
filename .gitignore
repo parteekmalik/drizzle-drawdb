@@ -1,0 +1,18 @@
+node_modules/
+dist/
+src/generated/
+
+# Vendored drawDB checkout (see README: clone + apply patch)
+vendor/
+
+# Fixture projects get their own installs
+fixtures/*/node_modules/
+fixtures/blog/drizzle/
+fixtures/blog/schema.drawdb.json
+fixtures/blog/.tmp-*/
+
+test/__screenshots__/
+.playwright-mcp/
+
+*.log
+.DS_Store
