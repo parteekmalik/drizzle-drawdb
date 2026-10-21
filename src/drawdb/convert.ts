@@ -36,6 +36,115 @@ export interface ConvertOptions {
  * carry x/y coordinates and render with an automatic layout -- no extra layout
  * step is required here.
  */
+/**
+ * Strips PostgreSQL array type suffixes (`Type[]`, `"Type"[]`) from column
+ * definitions so drawDB's parser doesn't choke on them. Array columns are
+ * downgraded to plain text — the column still appears in the diagram, just
+ * without array-ness.
+ */
+function stripArrayTypes(sql: string): string {
+  let stripped = sql;
+  let changed = false;
+
+  do {
+    changed = false;
+    // "TypeName"[] -> "TypeName"
+    const quoted = stripped.replace(/"([^"]+)"\[\]/g, '"$1"');
+    if (quoted !== stripped) { stripped = quoted; changed = true; }
+    // TypeName[] -> TypeName (only in column-def context: followed by , ) or newline)
+    const unquoted = stripped.replace(/\b(\w+)\[\](?=[,\s)]|$)/g, '$1');
+    if (unquoted !== stripped) { stripped = unquoted; changed = true; }
+  } while (changed);
+
+  return stripped;
+}
+
+/**
+ * Removes `CONSTRAINT "name" CHECK (...)` clauses from CREATE TABLE statements.
+ * drawDB's importer crashes on complex CHECK expressions (CASE, nested parens,
+ * etc.). CHECK constraints carry no diagram-relevant info, so dropping them is
+ * safe. Handles nested parentheses in the CHECK expression.
+ */
+function stripCheckConstraints(sql: string): string {
+  let result = sql;
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    const match = result.match(/CONSTRAINT\s+"[^"]+"\s+CHECK\s*\(/);
+    if (!match) break;
+
+    const start = match.index!;
+    // Find the matching closing paren by tracking depth
+    let depth = 0;
+    let end = -1;
+    for (let i = match.index! + match[0].length - 1; i < result.length; i++) {
+      if (result[i] === '(') depth++;
+      else if (result[i] === ')') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+
+    if (end === -1) break; // Unmatched paren, give up
+
+    // Remove from CONSTRAINT through the closing paren, plus trailing comma/whitespace
+    let removeEnd = end + 1;
+    while (
+      removeEnd < result.length &&
+      /[,\s]/.test(result[removeEnd])
+    ) {
+      removeEnd++;
+    }
+
+    result = result.slice(0, start) + result.slice(removeEnd);
+    changed = true;
+  }
+
+  return result;
+}
+
+/**
+ * Removes `CREATE INDEX` / `CREATE UNIQUE INDEX` statements. drawDB's importer
+ * ignores indexes (they carry no diagram info), but they can cause parse or
+ * import errors, so drop them up front. Removes entire lines to avoid leaving
+ * orphaned `;` or `WHERE` clauses behind.
+ */
+function stripCreateIndex(sql: string): string {
+  return sql.replace(/^\s*CREATE\s+(UNIQUE\s+)?INDEX[^\n]*\n?/gm, '');
+}
+
+/**
+ * Full preprocessing pipeline: strip constructs drawDB's importer cannot handle.
+ * Returns the cleaned SQL plus a list of warnings about what was stripped.
+ */
+function preprocessSql(sql: string): { sql: string; warnings: string[] } {
+  const warnings: string[] = [];
+
+  const afterArray = stripArrayTypes(sql);
+  if (afterArray !== sql) {
+    warnings.push("stripped PostgreSQL array type suffixes (Type[] → text)");
+  }
+
+  const afterCheck = stripCheckConstraints(afterArray);
+  if (afterCheck !== afterArray) {
+    warnings.push("stripped CHECK constraints (drawDB importer cannot parse them)");
+  }
+
+  // Remove trailing commas left behind by stripped constraints: `,\n)` → `\n)`
+  const afterComma = afterCheck.replace(/,\s*\n\s*\)/g, '\n)');
+  if (afterComma !== afterCheck) {
+    warnings.push("cleaned trailing commas from stripped constraints");
+  }
+
+  const afterIndex = stripCreateIndex(afterComma);
+  if (afterIndex !== afterComma) {
+    warnings.push("stripped CREATE INDEX statements");
+  }
+
+  return { sql: afterIndex, warnings };
+}
+
 export function convertSqlToDiagram(
   sql: string,
   options: ConvertOptions = {},
@@ -46,8 +155,11 @@ export function convertSqlToDiagram(
     throw new CliError("Nothing to convert: the generated SQL was empty.");
   }
 
-  const ast = parseSql(trimmed);
-  const warnings = classifyUnsupportedStatements(ast);
+  const { sql: preprocessed, warnings: preprocessWarnings } = preprocessSql(trimmed);
+  const ast = parseSql(preprocessed);
+  const warnings = classifyUnsupportedStatements(ast).concat(
+    preprocessWarnings.map((w) => ({ code: "preprocessed", message: w }))
+  );
 
   let diagram: ParsedDiagram;
   try {

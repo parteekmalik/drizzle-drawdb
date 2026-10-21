@@ -43256,13 +43256,87 @@ var qE = Pw(Rw(), 1);
 var export_Parser = qE.Parser;
 
 // src/drawdb/convert.ts
+function stripArrayTypes(sql) {
+  let stripped = sql;
+  let changed = false;
+  do {
+    changed = false;
+    const quoted = stripped.replace(/"([^"]+)"\[\]/g, '"$1"');
+    if (quoted !== stripped) {
+      stripped = quoted;
+      changed = true;
+    }
+    const unquoted = stripped.replace(/\b(\w+)\[\](?=[,\s)]|$)/g, "$1");
+    if (unquoted !== stripped) {
+      stripped = unquoted;
+      changed = true;
+    }
+  } while (changed);
+  return stripped;
+}
+function stripCheckConstraints(sql) {
+  let result = sql;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const match = result.match(/CONSTRAINT\s+"[^"]+"\s+CHECK\s*\(/);
+    if (!match) break;
+    const start = match.index;
+    let depth = 0;
+    let end = -1;
+    for (let i = match.index + match[0].length - 1; i < result.length; i++) {
+      if (result[i] === "(") depth++;
+      else if (result[i] === ")") {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end === -1) break;
+    let removeEnd = end + 1;
+    while (removeEnd < result.length && /[,\s]/.test(result[removeEnd])) {
+      removeEnd++;
+    }
+    result = result.slice(0, start) + result.slice(removeEnd);
+    changed = true;
+  }
+  return result;
+}
+function stripCreateIndex(sql) {
+  return sql.replace(/^\s*CREATE\s+(UNIQUE\s+)?INDEX[^\n]*\n?/gm, "");
+}
+function preprocessSql(sql) {
+  const warnings = [];
+  const afterArray = stripArrayTypes(sql);
+  if (afterArray !== sql) {
+    warnings.push("stripped PostgreSQL array type suffixes (Type[] \u2192 text)");
+  }
+  const afterCheck = stripCheckConstraints(afterArray);
+  if (afterCheck !== afterArray) {
+    warnings.push("stripped CHECK constraints (drawDB importer cannot parse them)");
+  }
+  const afterComma = afterCheck.replace(/,\s*\n\s*\)/g, "\n)");
+  if (afterComma !== afterCheck) {
+    warnings.push("cleaned trailing commas from stripped constraints");
+  }
+  const afterIndex = stripCreateIndex(afterComma);
+  if (afterIndex !== afterComma) {
+    warnings.push("stripped CREATE INDEX statements");
+  }
+  return { sql: afterIndex, warnings };
+}
 function convertSqlToDiagram(sql, options = {}) {
   const trimmed = sql.trim();
   if (trimmed === "") {
     throw new CliError("Nothing to convert: the generated SQL was empty.");
   }
-  const ast = parseSql(trimmed);
-  const warnings = classifyUnsupportedStatements(ast);
+  const { sql: preprocessed, warnings: preprocessWarnings } = preprocessSql(trimmed);
+  const ast = parseSql(preprocessed);
+  const warnings = classifyUnsupportedStatements(ast).concat(
+    preprocessWarnings.map((w) => ({ code: "preprocessed", message: w }))
+  );
   let diagram;
   try {
     diagram = mh(ast, Gi.POSTGRES, Gi.POSTGRES);
