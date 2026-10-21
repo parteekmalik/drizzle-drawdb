@@ -43437,11 +43437,21 @@ function packageRoot() {
 var execFileAsync2 = promisify2(execFile2);
 var PINNED_DRAWDB_COMMIT = "d9c0d39c6ae85d30058f3c32fc1af571dc25e456";
 async function resolveDrawDbCheckout(options = {}) {
-  const root = resolve3(
-    options.dir ?? process.env.DRAWDB_DIR ?? join4(packageRoot(), "vendor", "drawdb")
-  );
-  if (!existsSync4(join4(root, "package.json"))) {
-    throw new CliError(`drawDB checkout not found at ${root}.`, {
+  const candidates = [
+    options.dir,
+    process.env.DRAWDB_DIR,
+    join4(packageRoot(), "vendor", "drawdb"),
+    join4(packageRoot(), "drawdb-editor")
+  ];
+  let root;
+  for (const candidate of candidates) {
+    if (candidate && existsSync4(candidate)) {
+      root = resolve3(candidate);
+      break;
+    }
+  }
+  if (!root) {
+    throw new CliError(`drawDB checkout not found.`, {
       hint: `Clone the pinned revision and apply the extension patch:
   git clone https://github.com/drawdb-io/drawdb.git vendor/drawdb
   git -C vendor/drawdb checkout ${PINNED_DRAWDB_COMMIT}
@@ -43449,18 +43459,30 @@ async function resolveDrawDbCheckout(options = {}) {
 Or pass --drawdb-dir <path>.`
     });
   }
-  const extensionPath = join4(root, "src", "extensions", "localDiagram.js");
-  if (!existsSync4(extensionPath)) {
-    throw new CliError(
-      `The drawDB checkout at ${root} does not contain the drizzle-drawdb extension.`,
-      {
-        hint: "Apply the patch first:\n  git -C <path> apply /path/to/drizzle-drawdb/patches/0001-local-diagram-extension.patch\nRe-checkout and re-apply if upstream changed."
-      }
-    );
+  const isPrebuiltDist = root.endsWith("drawdb-editor") || root.includes("drawdb-editor");
+  if (!isPrebuiltDist) {
+    if (!existsSync4(join4(root, "package.json"))) {
+      throw new CliError(`drawDB checkout not found at ${root}.`, {
+        hint: `Clone the pinned revision and apply the extension patch:
+  git clone https://github.com/drawdb-io/drawdb.git vendor/drawdb
+  git -C vendor/drawdb checkout ${PINNED_DRAWDB_COMMIT}
+  git -C vendor/drawdb apply <path>/patches/0001-local-diagram-extension.patch
+Or pass --drawdb-dir <path>.`
+      });
+    }
+    const extensionPath = join4(root, "src", "extensions", "localDiagram.js");
+    if (!existsSync4(extensionPath)) {
+      throw new CliError(
+        `The drawDB checkout at ${root} does not contain the drizzle-drawdb extension.`,
+        {
+          hint: "Apply the patch first:\n  git -C <path> apply /path/to/drizzle-drawdb/patches/0001-local-diagram-extension.patch\nRe-checkout and re-apply if upstream changed."
+        }
+      );
+    }
   }
-  const dist = join4(root, "dist");
+  const dist = isPrebuiltDist ? root : join4(root, "dist");
   const distIndex = join4(dist, "index.html");
-  if (options.ensureBuild !== false && (!existsSync4(distIndex) || isStale(root, distIndex))) {
+  if (!isPrebuiltDist && options.ensureBuild !== false && (!existsSync4(distIndex) || isStale(root, distIndex))) {
     await buildDrawDb(root);
   }
   if (!existsSync4(distIndex)) {
