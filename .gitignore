@@ -12,5 +12,12 @@ fixtures/blog/.tmp-*/
 test/__screenshots__/
 .playwright-mcp/
 
+# Test app (sandbox for testing drizzle-drawdb)
+test-app/node_modules/
+test-app/.next/
+test-app/dev.sqlite
+test-app/drizzle/
+test-app/.drizzle/
+
 *.log
 .DS_Store
