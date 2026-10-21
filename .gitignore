@@ -1,6 +1,4 @@
 node_modules/
-dist/
-src/generated/
 
 # Vendored drawDB checkout (see README: clone + apply patch)
 vendor/
